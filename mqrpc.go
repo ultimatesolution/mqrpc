@@ -283,3 +283,67 @@ func (c *gobServerCodec) Close() error {
 	return c.rwc.Close()
 }
 
+// A value sent as a placeholder for the server's response value when the server
+// receives an invalid request. It is never decoded by the client since the Response
+// contains an error when it is used.
+var invalidRequest = struct{}{}
+
+func (server *MqRpc) sendResponse(sending *sync.Mutex, req *Request, reply interface{}, codec ServerCodec, errmsg string) {
+	resp := server.getResponse()
+	// Encode the response header
+	resp.ServiceMethod = req.ServiceMethod
+	if errmsg != "" {
+		resp.Error = errmsg
+		reply = invalidRequest
+	}
+	resp.Seq = req.Seq
+	sending.Lock()
+	err := codec.WriteResponse(resp, reply)
+	if debugLog && err != nil {
+		log.Println("rpc: writing response:", err)
+	}
+	sending.Unlock()
+	server.freeResponse(resp)
+}
+
+func (server *MqRpc) getRequest() *Request {
+	server.reqLock.Lock()
+	req := server.freeReq
+	if req == nil {
+		req = new(Request)
+	} else {
+		server.freeReq = req.next
+		*req = Request{}
+	}
+	server.reqLock.Unlock()
+	return req
+}
+
+func (server *MqRpc) freeRequest(req *Request) {
+	server.reqLock.Lock()
+	req.next = server.freeReq
+	server.freeReq = req
+	server.reqLock.Unlock()
+}
+
+func (server *MqRpc) getResponse() *Response {
+	server.respLock.Lock()
+	resp := server.freeResp
+	if resp == nil {
+		resp = new(Response)
+	} else {
+		server.freeResp = resp.next
+		*resp = Response{}
+	}
+	server.respLock.Unlock()
+	return resp
+}
+
+func (server *MqRpc) freeResponse(resp *Response) {
+	server.respLock.Lock()
+	resp.next = server.freeResp
+	server.freeResp = resp
+	server.respLock.Unlock()
+}
+
+
