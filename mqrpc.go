@@ -51,7 +51,7 @@ func (c *gobMqRpcCodec) Close() error {
 	return nil // nothing to do
 }
 
-type MqRpc struct {
+type MqRpcServer struct {
 	nc *nats.Conn
 	sub *nats.Subscription
 	srv *rpc.Server
@@ -60,7 +60,7 @@ type MqRpc struct {
 	queue string
 }
 
-func (r *MqRpc) msghandler(msg *nats.Msg) {
+func (r *MqRpcServer) msghandler(msg *nats.Msg) {
 	outbuf := bytes.NewBuffer([]byte{})
 	writer := bufio.NewWriter(outbuf)
 	reader := bytes.NewReader(msg.Data)
@@ -76,8 +76,8 @@ func (r *MqRpc) msghandler(msg *nats.Msg) {
 	}
 }
 
-func NewMqRpc(nc *nats.Conn, subj, queue string) (r *MqRpc, err error) {
-	r = &MqRpc {
+func NewServer(nc *nats.Conn, subj, queue string) (r *MqRpcServer, err error) {
+	r = &MqRpcServer {
 		nc: nc,
 		subj: subj,
 		queue: queue,
@@ -94,17 +94,17 @@ func NewMqRpc(nc *nats.Conn, subj, queue string) (r *MqRpc, err error) {
 	return
 }
 
-func (r *MqRpc) Close() error {
+func (r *MqRpcServer) Close() error {
 	return r.sub.Unsubscribe()
 }
 
-func (r *MqRpc) Register(rcvr interface{}) error {
+func (r *MqRpcServer) Register(rcvr interface{}) error {
 	return r.srv.Register(rcvr)
 }
 
 // RegisterName is like Register but uses the provided name for the type
 // instead of the receiver's concrete type.
-func (r *MqRpc) RegisterName(name string, rcvr interface{}) error {
+func (r *MqRpcServer) RegisterName(name string, rcvr interface{}) error {
 	return r.srv.RegisterName(name, true)
 }
 
@@ -114,6 +114,7 @@ type gobMqClientCodec struct {
 	timeout time.Duration
 	replyReader *bytes.Reader
 	dec *gob.Decoder
+	sync chan bool
 }
 
 func (c *gobMqClientCodec) WriteRequest(r *rpc.Request, body interface{}) error {
@@ -138,10 +139,12 @@ func (c *gobMqClientCodec) WriteRequest(r *rpc.Request, body interface{}) error 
 	// Create reply reader inside codec. It will be used later in Read*()
 	c.replyReader = bytes.NewReader(msg.Data)
 	c.dec = gob.NewDecoder(c.replyReader)
+	c.sync <- true
 	return nil
 }
 
 func (c *gobMqClientCodec) ReadResponseHeader(r *rpc.Response) error {
+	<- c.sync
 	return c.dec.Decode(r)
 }
 
@@ -158,6 +161,7 @@ func NewClient(nc *nats.Conn, subj string, timeout time.Duration) *rpc.Client {
 		nc: nc,
 		subj: subj,
 		timeout: timeout,
+		sync: make(chan bool),
 	}
 	return rpc.NewClientWithCodec(&codec)
 }
