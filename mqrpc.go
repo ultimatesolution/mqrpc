@@ -1,6 +1,7 @@
 package mqrpc
 
 import (
+	"time"
 	"log"
 	"bytes"
 	"bufio"
@@ -14,7 +15,6 @@ type gobMqRpcCodec struct {
 	dec *gob.Decoder
 	enc *gob.Encoder
 	writer *bufio.Writer
-	closed bool
 }
 
 func (c *gobMqRpcCodec) ReadRequestHeader(r *rpc.Request) error {
@@ -48,11 +48,6 @@ func (c *gobMqRpcCodec) WriteResponse(resp *rpc.Response, body interface{}) (err
 }
 
 func (c *gobMqRpcCodec) Close() error {
-	if c.closed {
-		// Only call c.rwc.Close once; otherwise the semantics are undefined.
-		return nil
-	}
-	c.closed = true
 	return nil // nothing to do
 }
 
@@ -73,7 +68,6 @@ func (r *MqRpc) msghandler(msg *nats.Msg) {
 		dec: gob.NewDecoder(reader),
 		enc: gob.NewEncoder(writer),
 		writer: writer,
-		closed: false,
 	}
 	r.srv.ServeCodec(&codec)
 	err := r.nc.Publish(msg.Reply, outbuf.Bytes())
@@ -114,3 +108,56 @@ func (r *MqRpc) RegisterName(name string, rcvr interface{}) error {
 	return r.srv.RegisterName(name, true)
 }
 
+type gobMqClientCodec struct {
+	nc *nats.Conn
+	subj string
+	timeout time.Duration
+	replyReader *bytes.Reader
+	dec *gob.Decoder
+}
+
+func (c *gobMqClientCodec) WriteRequest(r *rpc.Request, body interface{}) error {
+	outbuf := bytes.NewBuffer([]byte{})
+	writer := bufio.NewWriter(outbuf)
+	enc := gob.NewEncoder(writer)
+	if err := enc.Encode(r); err != nil {
+		return err
+	}
+	if err := enc.Encode(body); err != nil {
+		return err
+	}
+	if err := writer.Flush(); err != nil {
+		log.Println("client WriteRequest Flush error:", err)
+		return err
+	}
+	msg, err := c.nc.Request(c.subj, outbuf.Bytes(), c.timeout)
+	if err != nil {
+		log.Println("client WriteRequest Request error:", err)
+		return err
+	}
+	// Create reply reader inside codec. It will be used later in Read*()
+	c.replyReader = bytes.NewReader(msg.Data)
+	c.dec = gob.NewDecoder(c.replyReader)
+	return nil
+}
+
+func (c *gobMqClientCodec) ReadResponseHeader(r *rpc.Response) error {
+	return c.dec.Decode(r)
+}
+
+func (c *gobMqClientCodec) ReadResponseBody(body interface{}) error {
+	return c.dec.Decode(body)
+}
+
+func (c *gobMqClientCodec) Close() error {
+	return nil // nothing to do
+}
+
+func NewClient(nc *nats.Conn, subj string, timeout time.Duration) *rpc.Client {
+	codec := gobMqClientCodec{
+		nc: nc,
+		subj: subj,
+		timeout: timeout,
+	}
+	return rpc.NewClientWithCodec(&codec)
+}
