@@ -156,6 +156,8 @@ func (c *gobMqClientCodec) Close() error {
 	return nil // nothing to do
 }
 
+// Create the RPC client, associated with RPC server by a subject
+// (subj argument).
 func NewClient(nc *nats.Conn, subj string, timeout time.Duration) *rpc.Client {
 	codec := gobMqClientCodec{
 		nc: nc,
